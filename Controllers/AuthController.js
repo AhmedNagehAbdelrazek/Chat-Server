@@ -6,94 +6,118 @@ const crypto = require("crypto");
 const User = require("../Models/User");
 const filterObject = require("../utils/filterObject");
 const { promisify } = require("util");
+const hashData = require("../utils/HashData");
 
 const signToken = function (UserId) {
   return jwt.sign({ UserId }, process.env.JWT_SECRET_KEY);
 };
 
 //Register New User
-exports.signIn = async (req, res, next) => {
+exports.register = async (req, res, next) => {
   const { firstName, lastName, email, password } = req.body;
 
-  const filterBody = filterObject(
+  const filteredBody = filterObject(
     req.body,
     "firstName",
     "lastName",
-    "password",
-    "email"
+    "email",
+    "password"
   );
 
-  //check if there is user with the same email
+  // check if a verified user with given email exists
+
   const existing_user = await User.findOne({ email: email });
-  if (existing_user?.verified) {
-    res.status(400).json({
+
+  if (existing_user && existing_user.verified) {
+    // user with this email already exists, Please login
+    return res.status(400).json({
       status: "error",
-      message: "This Email is already used,Please login",
+      message: "Email already in use, Please login.",
     });
-    return;
-  } else if (existing_user && !existing_user.verified) {
-    const updatedUser = await User.findOneAndUpdate(
-      { email: email },
-      filterBody,
-      { new: true, upsert: true, validateModifiedOnly: true }
-    );
-    // generate OTP and sent email to user
-    req.userId = updatedUser._id;
+  } else if (existing_user) {
+    // if not verified than update prev one
+
+    await User.findOneAndUpdate({ email: email }, filteredBody, {
+      new: true,
+      validateModifiedOnly: true,
+    });
+
+    // generate an otp and send to email
+    req.userId = existing_user._id;
+    next();
   } else {
-    //if user is not available
-    const new_user = await User.create({ filterBody });
-    // generate OTP and sent email to user
+    // if user is not created before than create a new one
+    const new_user = await User.create(filteredBody);
+
+    // generate an otp and send to email
     req.userId = new_user._id;
+    next();
   }
-  next();
 };
 
 exports.sendOTP = async (req, res, next) => {
-  const { userId } = req.body;
+  const { userId } = req;
   const new_otp = otp.generate(6, {
-    digits: true,
-    lowerCaseAlphabets: false,
-    specialChars: false,
     upperCaseAlphabets: false,
+    specialChars: false,
+    lowerCaseAlphabets: false,
   });
-  const otp_expiry_time = Date.now() + 10 * 60 * 1000; // ten mins after otp sent (it works with milliseconds);
 
-  await User.findByIdAndUpdate(userId, {
-    otp: new_otp,
+  const otp_expiry_time = Date.now() + 10 * 60 * 1000; // 10 Mins after otp is sent
+
+  const user = await User.findByIdAndUpdate(userId, {
     otp_expiry_time: otp_expiry_time,
   });
 
-  //TODO: Send Mail
+  user.otp = new_otp.toString();
+
+  await user.save({ new: true, validateModifiedOnly: true });
+
+  console.log(new_otp);
+
+  // TODO send mail
+  // mailService.sendEmail({
+  //   from: "shreyanshshah242@gmail.com",
+  //   to: user.email,
+  //   subject: "Verification OTP",
+  //   html: otp(user.firstName, new_otp),
+  //   attachments: [],
+  // });
 
   res.status(200).json({
     status: "success",
-    message: "One Time-Password send Successfully",
+    message: "The verify code Sent to your Email",
   });
 };
 
-exports.verifyOTP = async (req, res, next) => {
+exports.verifyOTP = async (req, res, next) => { 
   // verify OTP and update user record accordingly
-  const { email, otp } = res.body;
+  const { email, otp } = req.body;
 
-  const user = User.findOne({
+  const user = await User.findOne({
     email,
     otp_expiry_time: { $gt: Date.now() },
-  }).select("+otp");
+  });
 
   if (!user) {
-    res.status(400).json({
+    return res.status(400).json({
       status: "error",
       message: "Email is invalid or OTP is expired",
     });
-    return;
+  }
+
+  if (user.verified) {
+    return res.status(400).json({
+      status: "error",
+      message: "Email is already verified",
+    });
   }
 
   if (!(await user.correctOTP(otp, user.otp))) {
-    res.status(400).json({
+    return res.status(400).json({
       status: "error",
       message: "The OTP is incorrect",
     });
-    return;
   }
 
   // OTP is correct
@@ -107,13 +131,15 @@ exports.verifyOTP = async (req, res, next) => {
     status: "success",
     message: "OTP verified successfully",
     token,
+    user_id: user._id,
   });
 };
 
-// LOg in the User
+// Log in the User
 exports.login = async (req, res, next) => {
   const { email, password } = req.body;
 
+  console.log("user try to login");
   if (!email || !password) {
     res.status(400).json({
       status: "error",
@@ -127,11 +153,17 @@ exports.login = async (req, res, next) => {
     !foundUser ||
     !(await foundUser.correctPassword(password, foundUser.password))
   ) {
-    res.status(400).json({
+    return res.status(400).json({
       status: "error",
       message: "Email or Password is incorrect",
     });
-    return;
+  }
+
+  if(!foundUser.verified){
+    return res.status(400).json({
+      status: "error",
+      message: "The account is Not Verified",
+    });
   }
 
   const token = signToken(foundUser._id);
@@ -140,16 +172,17 @@ exports.login = async (req, res, next) => {
     status: "success",
     message: "Logged in successfully",
     token,
+    user_id: foundUser._id,
   });
 };
 
 exports.protect = async (req, res, next) => {
   //Getting a Token (JWT) and check if it's actually there
   let token;
-
-  if (req.headers.authorization?.startWith("Bearer")) {
+  console.log();
+  if (String(req.headers.authorization)?.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
-  } else if (req.cookies.jwt) {
+  } else if (req.cookies?.jwt) {
     token = req.cookies.jwt;
   } else {
     res.status(400).json({
@@ -185,7 +218,7 @@ exports.protect = async (req, res, next) => {
     });
     return;
   }
-  req.User = this_user;
+  req.user = this_user;
   next();
 };
 
@@ -194,21 +227,24 @@ exports.protect = async (req, res, next) => {
 exports.forgotPassword = async (req, res, next) => {
   //get user email
   const { email } = req.body;
-  const foundUser = User.findOne({ email });
+  const foundUser = await User.findOne({ email });
 
   if (!foundUser) {
     res.status(400).json({
       status: "error",
       message: "There is no user wth the given email address",
     });
+    console.error("There is no user wth the given email address");
     return;
   }
   // Generate the random reset Token
 
   //https:// ...?code=asa5s1d5a4
-
+  console.log(!foundUser);
   const resetToken = foundUser.createPasswordResetToken();
-  const resetUrl = `https://whatsappclone.com/reset-password/?code=${resetToken}`;
+  const resetUrl = `http://localhost:3000/auth/new-password/?token=${resetToken}`;
+  console.log(resetUrl);
+  console.log(resetToken);
 
   try {
     //TODO: => send Email with Reset URL
@@ -217,6 +253,7 @@ exports.forgotPassword = async (req, res, next) => {
       status: "success",
       message: "Reset Password link sent to email",
     });
+    await foundUser.save({ new: true, validateModifiedOnly: false });
   } catch (error) {
     foundUser.passwordResetToken = undefined;
     foundUser.passwordResetExpires = undefined;
@@ -232,17 +269,26 @@ exports.forgotPassword = async (req, res, next) => {
 
 exports.resetPassword = async (req, res, next) => {
   //get the new password and the user by Token
+  const resetToken = req.query.token || req.body.token;
 
-  const hashedToken = crypto
-    .createHash("sha256")
-    .update(req.param.token)
-    .digest("hex");
+  console.log("Token ", resetToken);
+  console.log("Password ", req.body.password);
 
-  const foundUser = User.findOne({
+  if(!resetToken){
+    return res.status(404).json({
+      status: "error",
+      message: "Something Went Wrong!!",
+    });
+  }
+  const hashedToken = hashData(resetToken.toString("hex"));
+
+  console.log("Hashed Token", hashedToken);
+
+  const foundUser = await User.findOne({
     passwordResetToken: hashedToken,
-    passwordResetExpires: { $gt: Date.now() },
+    // passwordResetExpires: { $gt: Date.now() },
   });
-
+  console.log("reset password user ", foundUser);
   // if token has Expired
   if (!foundUser) {
     res.status(400).json({

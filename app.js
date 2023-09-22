@@ -10,11 +10,11 @@ const mongosanitize = require("express-mongo-sanitize");
 
 const bodyParser = require("body-parser");
 
-const xss = require("xss");
+const xss = require("xss-clean");
 
 const cors = require("cors");
 
-
+const routes = require('./Routes/index');
 
 
 
@@ -28,10 +28,10 @@ app.use(cors({
 }));
 
 app.use(express.json({limit:"10kb"}));
+app.use(helmet());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({extended:true}));
 
-app.use(helmet());
 
 if(process.env.NODE_ENV === 'development'){
     app.use(morgan);
@@ -45,12 +45,19 @@ const limiter = rateLimit({
 
 app.use("/WhatsAppClone",limiter);
 
-app.use(express.urlencoded({extended:true}));
+app.use(
+    express.urlencoded({
+      extended: true,
+    })
+  );
 
 app.use(mongosanitize());
 
-// app.use(xss());
+app.use(xss());
 
+app.use(routes);
 
 module.exports = app;
+
+
 

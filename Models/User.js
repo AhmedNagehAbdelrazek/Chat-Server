@@ -1,110 +1,158 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const hashData = require("../utils/HashData");
 
-const userSchema = mongoose.Schema({
+const userSchema = new mongoose.Schema({
   firstName: {
     type: String,
-    required: [true, "first Name is required"],
+    required: [true, "First Name is required"],
   },
   lastName: {
     type: String,
-    required: [true, "last Name is required"],
+    required: [true, "Last Name is required"],
+  },
+  about: {
+    type: String,
   },
   avatar: {
     type: String,
   },
   email: {
     type: String,
-    required: [true, "email is required"],
+    required: [true, "Email is required"],
     validate: {
       validator: function (email) {
         return String(email)
-          .toLocaleLowerCase()
+          .toLowerCase()
           .match(
-            RegExp(
-              '/^(([^<>()[].,;:s@"]+(.[^<>()[].,;:s@"]+)*)|(".+"))@(([^<>()[].,;:s@"]+.)+[^<>()[].,;:s@"]{2,})$/i'
-            )
+            /^(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/
           );
       },
-      message: (params) => {
-        return `The Email ${params} is invalid`;
-      },
+      message: (props) => `Email (${props.value}) is invalid!`,
     },
   },
-  password: String,
-  passwordChangedAt: Date,
-  passwordResetToken: String,
-  passwordResetExpires: Date,
-  createdAt: Date,
-  updatedAt: Date,
+  password: {
+    // unselect
+    type: String,
+  },
+  passwordChangedAt: {
+    // unselect
+    type: Date,
+  },
+  passwordResetToken: {
+    // unselect
+    type: String,
+  },
+  passwordResetExpires: {
+    // unselect
+    type: Date,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now(),
+  },
+  updatedAt: {
+    // unselect
+    type: Date,
+  },
   verified: {
     type: Boolean,
     default: false,
   },
-  otp: Number,
-  otp_expiry_time: Date,
+  otp: {
+    type: String,
+  },
+  otp_expiry_time: {
+    type: Date,
+  },
+  friends: [
+    {
+      User: {
+        type: mongoose.Schema.ObjectId,
+        ref: "User",
+      },
+      pinned: {
+        type: Boolean,
+        default: false,
+      },
+    },
+  ],
+  socket_id: {
+    type: String,
+  },
+  status: {
+    type: String,
+    enum: ["Online", "Offline"],
+  },
 });
 
-// pre save to hash the otp
 userSchema.pre("save", async function (next) {
-  //only run this function if OTP is actually is modified
-  if (!this.isModified("otp")) return next();
+  // Only run this function if password was actually modified
+  if (!this.isModified("otp") || !this.otp) return next();
 
-  // hash the otp with cost of 12
-  this.otp = await bcrypt.hash(this.otp, 12);
+  // Hash the otp with cost of 12
+  this.otp = await bcrypt.hash(this.otp.toString(), 12);
+
+  console.log(this.otp.toString(), "FROM PRE SAVE HOOK");
 
   next();
 });
 
-// pre save to hash the password
 userSchema.pre("save", async function (next) {
-  //only run this function if OTP is actually is modified
-  if (!this.isModified("password")) return next();
+  // Only run this function if password was actually modified
+  if (!this.isModified("password") || !this.password) return next();
 
-  // hash the otp with cost of 12
+  // Hash the password with cost of 12
   this.password = await bcrypt.hash(this.password, 12);
 
+  //! Shift it to next hook // this.passwordChangedAt = Date.now() - 1000;
+
   next();
 });
 
-// correctPassword
+userSchema.pre("save", function (next) {
+  if (!this.isModified("password") || this.isNew || !this.password)
+    return next();
+
+  this.passwordChangedAt = Date.now() - 1000;
+  next();
+});
+
 userSchema.methods.correctPassword = async function (
-  candidatePassword, //password got form the frontend
-  userPassword // the enc
+  candidatePassword,
+  userPassword
 ) {
   return await bcrypt.compare(candidatePassword, userPassword);
 };
 
-// correctOTP
-userSchema.methods.correctOTP = async function (
-  candidateOTP, //password got form the frontend
-  userOTP // the enc
-) {
+userSchema.methods.correctOTP = async function (candidateOTP, userOTP) {
   return await bcrypt.compare(candidateOTP, userOTP);
 };
 
-// createPasswordResetToken
-userSchema.methods.createPasswordResetToken = async function () {
+userSchema.methods.changedPasswordAfterTokenChanged = function (JWTTimeStamp) {
+  if (this.passwordChangedAt) {
+    const changedTimeStamp = parseInt(
+      this.passwordChangedAt.getTime() / 1000,
+      10
+    );
+    return JWTTimeStamp < changedTimeStamp;
+  }
+
+  // FALSE MEANS NOT CHANGED
+  return false;
+};
+
+userSchema.methods.createPasswordResetToken = function () {
   const resetToken = crypto.randomBytes(32).toString("hex");
 
-  this.passwordResetToken = crypto
-    .createHash("sha256")
-    .update(resetToken)
-    .digest("hex");
+  this.passwordResetToken = hashData(resetToken);
 
-  this.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 mins for token to expire
+  this.passwordResetExpires = Date.now() + 10 * 60 * 1000;
 
   return resetToken;
 };
 
-// correctOTP
-userSchema.methods.changedPasswordAfterTokenChanged = async function (
-  timestamp
-) {
-  return timestamp < this.passwordChangedAt;
-};
-
-const User = mongoose.model("User", userSchema);
+const User = new mongoose.model("User", userSchema);
 
 module.exports = User;
