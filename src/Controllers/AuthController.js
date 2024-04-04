@@ -6,7 +6,8 @@ const crypto = require("crypto");
 const User = require("../Models/User");
 const filterObject = require("../utils/filterObject");
 const { promisify } = require("util");
-const hashData = require("../utils/HashData");
+const hashData = require("../utils/hashData");
+const sendEmail = require("../Services/Mailer");
 
 const signToken = function (UserId) {
   return jwt.sign({ UserId }, process.env.JWT_SECRET_KEY);
@@ -83,6 +84,7 @@ exports.sendOTP = async (req, res, next) => {
   //   html: otp(user.firstName, new_otp),
   //   attachments: [],
   // });
+  sendEmail(user.email, "Verification OTP", `Your OTP is ${new_otp}`);
 
   res.status(200).json({
     status: "success",

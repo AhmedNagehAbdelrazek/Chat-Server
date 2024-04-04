@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-const hashData = require("../utils/HashData");
+const hashData = require("../utils/hashData");
 
 const userSchema = new mongoose.Schema({
   firstName: {
@@ -85,6 +85,12 @@ const userSchema = new mongoose.Schema({
     type: String,
     enum: ["Online", "Offline"],
   },
+  starred_messages: [
+    {
+      type: mongoose.Schema.ObjectId,
+      ref: "Message",
+    }
+  ]
 });
 
 userSchema.pre("save", async function (next) {
